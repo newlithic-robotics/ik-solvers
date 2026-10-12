@@ -1,0 +1,61 @@
+# Newlithic gripper mounted on the LeRobot SO-ARM101 (Fusion document "robot arm newlithic gripper on SO-ARM101", 2026-10-10).
+# All lengths mm.  Three frames are used:
+#   D   = the Fusion document frame of the arm-gripper STEP (the gripper sits yawed -0.355 deg in it; fingertips toward +y, camera up +z)
+#   G   = common gripper frame used to compare rigs: origin = midpoint of the two jaw pivots at the height of the pad contact strips,
+#         x = from the L pivot toward the R pivot, y = toward the fingertips, z = x cross y (toward the camera)
+#   g   = URDF gripper_link frame of so_arm101.urdf (origin on the wrist_roll axis at the servo flange face, z toward the wrist servo)
+
+mount:
+  interface: STS3215 wrist-roll output flange, 4x M3 on a 9.9 mm square (7.0 mm radius), flange disc r = 10
+  plate: "lerobot wrist to gripper mount plate 48.006 x 26.8 x 7 body + dia-24 x 7.5 hub on the wrist face (trimmed flush with the plate lower edge), dia-6 x 4 shaft pocket in the hub face, 4x dia-3.5 through holes with dia-6.4 x 3.0 counterbores on the gripper face (ISO 4762 M3 x 14 socket-head screws: 4.0 under head + 7.5 hub + 2.5 flange thread), 2+2 end holes r 1.6, 12 mm apart"
+  plate_in_D: {rotation_z_deg: -0.3552, translation: [10.5842, -72.2435, -1.3985]}   # plate ends flush with the bracket ears (48.0 gap), end holes coaxial with the ear holes
+  roll_axis_in_D: {point: [10.494, -86.743, -5.0], direction: [-0.0062, -1.0, 0.0]}   # origin on the servo flange face (= hub face, 7.5 mm beyond the plate body); points from the gripper toward the wrist servo
+  clocking: the plate pattern is 45 deg from the stock follower pattern; the pattern is 90-deg symmetric so the gripper x-axis ends up 42.2 deg from the URDF gripper_link x-axis
+  design_flags:
+    - "hub + dia-6 x 4 pocket added 2026-10-10: the servo output shaft boss (r ~2.7, 1.5 mm proud) sits in the pocket; the hub (dia 24) passes the wrist housing opening (min radius 14.1) with 2.1 mm radial clearance and lifts the plate body 7.5 mm, i.e. 2.8 mm clear of the housing front (4.7 mm proud of the flange)"
+    - "the hub is D-shaped (flat at the plate lower edge) because the horn pattern sits 3.6 mm below the plate centre; the wall between the lower screw hole and that flat is only 1.05 mm"
+    - "source STEP: ATTACHMENT_METAL_R ring overlaps the right gear hub by 2063 mm3 (modelled inside it); UPPER PLATE / Part 1 overlap 16 mm3; both constant, not kinematic"
+    - "the flange-face position (z_g = 0.00) comes from the URDF servo mesh (446 planar facets at z_g = 0, disc to z_g = 2.5); measure on the real servo"
+
+jaws:                                  # same jaw family as the handheld rig; Fusion joints REV_L (0 = closed, 0..45.635 deg = opening q), REV_R = -REV_L
+  pivots_D: {L: [-4.0774, -13.0678], R: [25.9220, -13.2540]}     # axes parallel to z, 30.000 apart; L jaw is on the -x side here
+  closed_pose: import pose rotated -5.7255 deg (L) / +5.7255 deg (R); pad tips touch at D (11.52, 90.94, -0.42); strips parallel to the midplane within 0.9 deg
+  open_stop_deg: 45.635               # gear/arm against the UPPER PLATE wall (CAD)
+  contact_strip_centre_closed_D: {L: [11.369, 81.365, -3.9], R: [11.549, 81.363, -3.9]}
+  contact_polar: {L: {r: 95.688, phi0_deg: 80.710}, R: {r: 95.703, phi0_deg: 98.638}}   # about own pivot, from +x; L: phi0 + q, R: phi0 - q
+  marker_pocket_centre_closed_D: {L: [-14.903, 39.296, 7.6], R: [37.397, 38.971, 7.6]}   # 15 x 15 pocket floor, normal +z
+
+tcp_closed_D: [11.459, 81.364, -3.9]
+camera:
+  center_D: [10.822, -29.414, 81.222]                 # lens axis meets tripod axis; X3 seated on the bracket cradle (contact, no interference)
+  lens_axis_finger_side_D: [0.0059, 0.9523, -0.305]
+  body_axis_D: [0.0019, 0.305, 0.9524]
+
+in_URDF_gripper_link_frame:            # use these to replace gripper_frame_joint / add a camera frame in so_arm101.urdf (metres = /1000)
+  T_D_to_g_rows: [[0.7407, -0.6718, -0.0062, 10.4943], [-0.0046, 0.0042, -1.0, -86.7433], [0.6719, 0.7407, 0.0, -5.0]]   # columns = g axes in D, last = g origin in D
+  tcp_closed: [0.68, 0.87, -168.11]     # stock fingertip frame gripper_frame_link was (-7.9, -0.2, -98.1)
+  camera_center: [57.91, 63.88, -57.33]
+  lens_axis_finger_side: [-0.205, -0.226, -0.952]
+  camera_body_axis: [0.64, 0.705, -0.305]
+  marker_pocket_centre_closed: {L: [-10.92, 26.92, -125.88], R: [27.81, -8.22, -125.88]}
+
+rig_match_in_G:                        # handheld rig (2026-09-17 model, closed) vs arm rig (closed)
+  tcp: {handheld: [0.0, 94.39, 0.0], arm: [-0.05, 94.53, 0.0]}
+  camera_center: {handheld: [0.0, -16.25, 86.41], arm: [0.0, -16.25, 85.12]}      # arm camera 1.29 mm closer to the strip plane
+  marker_pocket: {handheld: [25.62, 52.4, 12.0], arm: [26.15, 52.3, 11.5]}        # |x|, 0.5 mm further outboard and 0.5 mm lower on the arm
+  lens_axis_finger_side: {handheld: [0.0, 0.952, -0.305], arm: [0.0, 0.952, -0.305]}   # 0.0 deg difference
+  camera_to_tcp_in_camera_frame: {handheld: [0.0, -48.55, 131.73], arm: [0.05, -47.28, 131.46]}   # x right, y camera body up, z lens; 1.3 mm difference
+
+actuator:                              # added 2026-10-10 (later session): STS3215 for the jaws + "servo holder" + proposed adapter
+  servo: Feetech STS3215 (SO-101 mesh sts3215_03a_v1), output shaft on the R jaw pivot (25.922, -13.254), long axis along +x, output up (+z)
+  servo_transform_D: {rotation_z_deg: -0.3552, translation: [13.422, -13.177, -40.3]}   # rear horn face on the holder floor (z -58); body top -24.4, horn disc -23.8..-21.6, shaft tip -20.1
+  holder: "servo holder seated by its 4 mounting holes on the CASE underside"
+  holder_transform_D: {rotation_z_deg: -0.3552, translation: [26.0149, 1.8265, -22.0]}   # hole fit residual <= 0.08 mm; +x wall sits in the CASE end-wall step (flush, 0.09 mm3)
+  holder_changes:
+    - "floor lowered 3 mm (floor now z -38..-36 holder-local, document -60..-58): as drawn the servo body entered the CASE by 2.1 mm"
+    - "floor window re-cut at its original place (connector ridge passes through it); rear-shaft hole re-cut as dia 12 centred on the gear pivot (the original dia-10 hole was 1.0 mm off the pivot in x)"
+    - "the two dia-8 cable grooves that were in the old floor top are not reproduced"
+  holder_screws: 4x M2.5 x 10 socket head (CASE holes are dia 2.04 tapped M2.5 behind a 3.3 mm dia-3.1 section; holder holes dia 3.5 with dia 5.6 x 3 counterbores)
+  residual_contact: "servo output-end face vs CASE collar bottom edge: 0.2 mm over a 1.1 mm band (x 36.1, y -22.7..-3.8, z -27..-25.9) -> chamfer 0.5 mm on the collar"
+  adapter_proposed: "HORN_TO_GEAR_ADAPTER: dia-20 x 3 disc on the horn (4x dia 3.2 on the 9.9 mm square, dia 6 centre clearance for the shaft tip) + 9.0 mm square peg 8.6 mm long into the gear's 9.1 mm socket (0.05 mm/side), peg top 0.2 mm below the socket top; disc stays inside the dia-22 CASE pocket (1.0 mm radial); clocked to the socket at the closed pose (5.73 deg), so the real horn is set at calibration"
+  fusion: "components SERVO_HOLDER, STS3215_GRIPPER (mesh), HORN_TO_GEAR_ADAPTER; rigid as-built joints RIG_holder_case, RIG_servo_holder, RIG_adapter_gearR (adapter turns with REV_R)"

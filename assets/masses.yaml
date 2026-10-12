@@ -1,0 +1,16 @@
+notes: 'mass_g overrides density; density in g/cm3 is applied to the CAD volume.  Printed
+  parts: PLA 1.24 g/cm3 x 0.8 (walls + infill) = 1.0 g/cm3 - an assumption, weigh
+  the real parts and edit this file.'
+densities_g_cm3:
+  printed: 1.0
+  aluminium: 2.7
+parts:
+  X3_CAMERA:
+    mass_g: 180.0
+    why: Insta360 X3 specification
+  STS3215:
+    mass_g: 55.0
+    why: Feetech specification
+  ATTACHMENT_METAL_R:
+    material: aluminium
+default_material: printed

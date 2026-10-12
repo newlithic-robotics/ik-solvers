@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .[test]
+      - run: pytest -q
+
+  solve-smoke:
+    # the IK stage on a 40-frame slice of the bundled Episode-1 demonstration (MuJoCo + mink, no lerobot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[solve]
+      - run: python -m newlithic_lerobot solve --demo assets/demo/episode1.npz --left=-40.3,-171.5,37.5 --right=336.5,525.8,225.0 --frames 200:240 --max-nfev 5 --out out/smoke.npz
+      - run: python -m newlithic_lerobot inspect out/smoke.npz

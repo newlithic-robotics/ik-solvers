@@ -2,11 +2,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
-.venv/
+.venv*/
 build/
 dist/
 out/
 datasets/
-*.npz
-*.mp4
-*.parquet
