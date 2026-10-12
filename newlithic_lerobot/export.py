@@ -152,7 +152,7 @@ def write_dataset(episode_paths, root: Path, repo_id: str, cfg: ExportConfig, ca
         if root.exists() and any(root.iterdir()):
             raise FileExistsError(f"{root} exists and is not empty (use --resume to append)")
         ds = LeRobotDataset.create(repo_id, fps=cfg.fps, features=features, root=root, robot_type=ROBOT_TYPE, use_videos=bool(cameras),
-                                   image_writer_threads=cfg.image_writer_threads if cameras else 0, vcodec=cfg.vcodec)
+                                   image_writer_threads=cfg.image_writer_threads if cameras else 0, **_codec_kwargs(cfg.vcodec))
     record = dict(newlithic_lerobot=__version__, created=datetime.now(timezone.utc).isoformat(timespec="seconds"), robot_type=ROBOT_TYPE,
                   export=_cfg_dict(cfg), cameras={k: str(v) for k, v in cameras.items()}, features=features, episodes=[])
     total = 0
@@ -206,6 +206,19 @@ def verify(root: Path, repo_id: str, log=print) -> dict:
         out[k] = list(item[k].shape)
     log(f"  timestamps {float(item['timestamp']):.3f} .. {float(last['timestamp']):.3f} s, task {item['task']!r}")
     return out
+
+
+def _codec_kwargs(vcodec: str) -> dict:
+    """lerobot <= 0.5 takes `vcodec=`; 0.6+ takes `rgb_encoder=RGBEncoderConfig(vcodec=...)`."""
+    import inspect
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    params = inspect.signature(LeRobotDataset.create).parameters
+    if "vcodec" in params:
+        return {"vcodec": vcodec}
+    if "rgb_encoder" in params:
+        from lerobot.configs.video import RGBEncoderConfig
+        return {"rgb_encoder": RGBEncoderConfig(vcodec=vcodec)}
+    return {}
 
 
 def _cfg_dict(cfg: ExportConfig) -> dict:

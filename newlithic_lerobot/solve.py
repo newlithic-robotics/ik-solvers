@@ -1,6 +1,6 @@
 """Stage 1: the demonstration -> joint trajectories for both arms (a retargeted episode).
 
-What `docs/findings.md` of the controller repository recommends for a recorded dataset, wired as one call:
+What `docs/findings.md` recommends for a recorded dataset, wired as one call:
 
   1. bimanual QP   both arms in one QP per frame in the cell model; the right gripper is asked for its pose RELATIVE to the
                    left while the left holds the screw in the air; joint / velocity limits and arm-arm / arm-table collisions
@@ -11,14 +11,13 @@ What `docs/findings.md` of the controller repository recommends for a recorded d
                    demonstration's phases.
   3. evaluation    residuals against the demonstrated targets (the numbers the findings report), gravity torque, collisions.
 
-Needs the controller package (`newlithic`: MuJoCo, mink, qpsolvers) and its assets - give its checkout as `controller_root`
-or set NEWLITHIC_CONTROLLER.  Everything downstream (export) is independent of it.
+Needs the `newlithic` package of this repository (MuJoCo, mink, qpsolvers: `pip install -e .[solve]`).  Everything downstream
+(export) is independent of it.
 """
 from __future__ import annotations
 
-import os
+import copy
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -31,6 +30,7 @@ from . import __version__
 from .episode import HandTrajectory, RetargetedEpisode, pose7
 
 DEFAULT_TASK = "Unscrew the M5 nut from the bolt held by the other hand"
+REPO = Path(__file__).resolve().parents[1]
 
 
 @dataclass
@@ -47,17 +47,6 @@ class SmoothConfig:
     max_nfev: int = 40
 
 
-def controller_root(explicit: Optional[str] = None) -> Path:
-    root = explicit or os.environ.get("NEWLITHIC_CONTROLLER")
-    if not root:
-        raise SystemExit("the controller package is needed: pass --controller-root or set NEWLITHIC_CONTROLLER to the "
-                         "checkout that holds newlithic/ and assets/")
-    root = Path(root)
-    if not (root / "newlithic" / "demo.py").exists():
-        raise SystemExit(f"{root} does not contain newlithic/demo.py")
-    return root
-
-
 def _git_rev(root: Path) -> Optional[str]:
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=10).stdout.strip() or None
@@ -70,15 +59,29 @@ def _fk(kin, q: np.ndarray, jaw: np.ndarray):
     return np.stack(R), np.stack(p)
 
 
-def solve_episode(demo_path: Path, placements_mm: dict, root: Path, qp: Optional[QPConfig] = None,
-                  smooth: Optional[SmoothConfig] = None, collisions: bool = True, task: str = DEFAULT_TASK,
-                  log=print) -> RetargetedEpisode:
+def slice_demo(demo, a: int, b: int):
+    """The demonstration restricted to frames a:b (every hand), for smoke tests and partial solves."""
+    demo = copy.deepcopy(demo)
+    for h in demo.hands.values():
+        n = h.n
+        a0, b0 = max(0, a), min(n, b)
+        if b0 - a0 < 2:
+            raise ValueError(f"frames {a}:{b} leave fewer than two of {n} frames")
+        for k in ("t", "R", "p", "gap", "phase", "hold_id", "valid", "height", "tips_height"):
+            setattr(h, k, getattr(h, k)[a0:b0])
+        # the grasp events index frames (the scene places the screws at the picks): shift them into the slice and clamp
+        for ev in h.events:
+            for key in ("cross", "contact", "release", "open"):
+                if key in ev:
+                    ev[key] = int(min(max(int(ev[key]) - a0, 0), b0 - a0 - 1))
+    return demo
+
+
+def solve_episode(demo_path: Path, placements_mm: dict, qp: Optional[QPConfig] = None, smooth: Optional[SmoothConfig] = None,
+                  collisions: bool = True, task: str = DEFAULT_TASK, frames: Optional[tuple] = None, log=print) -> RetargetedEpisode:
     """placements_mm: hand -> (x_mm, y_mm, yaw_deg) of the arm base in the demonstration's world (as `scripts/place.py` prints)."""
     qp = qp or QPConfig()
     smooth = smooth or SmoothConfig()
-    root = Path(root)
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
     from newlithic.cad import load_rig
     from newlithic.collide import Collider
     from newlithic.demo import Placement, load_demo
@@ -93,6 +96,8 @@ def solve_episode(demo_path: Path, placements_mm: dict, root: Path, qp: Optional
 
     t0 = time.time()
     demo = load_demo(Path(demo_path))
+    if frames is not None:
+        demo = slice_demo(demo, *frames)
     cad = load_rig()
     surface = TABLE_Z_BASE + PLATE_THICKNESS
     arms = {}
@@ -143,7 +148,7 @@ def solve_episode(demo_path: Path, placements_mm: dict, root: Path, qp: Optional
         log(rep.summary())
 
     solver_meta = dict(stages=["bimanual_qp"] + (["traj"] if smooth.enabled else []), qp=asdict(qp), smooth=asdict(smooth),
-                       relative_frames=int(rel.sum()), qp_elapsed_s=t_qp, summaries={})
+                       relative_frames=int(rel.sum()), qp_elapsed_s=t_qp, frames=list(frames) if frames else None, summaries={})
     for n in arms:
         sol, tau, tg = summaries[n]
         s = summary(sol, torque=tau, stall_Nm=STS3215["12V"]["stall_Nm"], collisions=pen)
@@ -155,9 +160,10 @@ def solve_episode(demo_path: Path, placements_mm: dict, root: Path, qp: Optional
                                   pos_err_mm=sol.pos_err_mm, tilt_err_deg=sol.tilt_err_deg, roll_err_deg=sol.roll_err_deg,
                                   lost_deg=sol.lost_deg)
         task_m = sol.phase != 0
-        log(f"{n}: task position error median {np.median(sol.pos_err_mm[task_m]):.2f} mm, tilt {np.median(sol.tilt_err_deg[task_m]):.1f} deg, "
-            f"speed p95 {max(v['p95'] for v in s['joint_speed_deg_s'].values()):.0f} deg/s, accel p95 {s['joint_accel_deg_s2_p95']:.0f} deg/s2, "
-            f"smoothness {s['smoothness_deg']:.3f} deg/frame")
+        if task_m.any():
+            log(f"{n}: task position error median {np.median(sol.pos_err_mm[task_m]):.2f} mm, tilt {np.median(sol.tilt_err_deg[task_m]):.1f} deg, "
+                f"speed p95 {max(v['p95'] for v in s['joint_speed_deg_s'].values()):.0f} deg/s, accel p95 {s['joint_accel_deg_s2_p95']:.0f} deg/s2, "
+                f"smoothness {s['smoothness_deg']:.3f} deg/frame")
     solver_meta["elapsed_s"] = time.time() - t0
     gripper = dict(open_stop_deg=float(cad.open_stop_deg), gap_mm_at_0=float(cad.gap_mm(0.0)),
                    gap_mm_at_stop=float(cad.gap_mm(cad.open_stop_deg)),
@@ -165,9 +171,8 @@ def solve_episode(demo_path: Path, placements_mm: dict, root: Path, qp: Optional
     t_ref = next(iter(summaries.values()))[2].t
     ep = RetargetedEpisode(episode=demo.episode, fps=float(demo.fps), t=np.asarray(t_ref, float), hands=hands,
                            placements={n: arms[n].as_dict() for n in arms}, gripper=gripper, solver=solver_meta,
-                           provenance=dict(demo=str(Path(demo_path).resolve()), demo_notes=demo.notes, controller_root=str(root.resolve()),
-                                           controller_git=_git_rev(root), newlithic_lerobot=__version__,
-                                           created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                           provenance=dict(demo=str(Path(demo_path).resolve()), demo_notes=demo.notes, repo_git=_git_rev(REPO),
+                                           newlithic_lerobot=__version__, created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                                            surface_z_base_m=surface),
                            task=task)
     return ep

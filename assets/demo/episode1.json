@@ -1,0 +1,157 @@
+{
+ "episode": "Episode-1",
+ "fps": 29.97002997002997,
+ "table_z": -0.15910734735617027,
+ "notes": {
+  "gap_offset_m": {
+   "left": -0.0018972051350760188,
+   "right": -0.0001841955504397752
+  },
+  "jig_gap_mm": 22.4,
+  "sync_claps": [
+   [
+    "left",
+    0,
+    3.661504,
+    0.7007710000000005
+   ],
+   [
+    "right",
+    0,
+    3.528295294373405,
+    0.7341260000000003
+   ]
+  ],
+  "clock": "left rig pose clock",
+  "world": "left rig world, gravity aligned, z up"
+ },
+ "phase_codes": {
+  "transport": 0,
+  "grasp": 1,
+  "hold": 2,
+  "release": 3,
+  "approach": 4
+ },
+ "hands": {
+  "left": {
+   "n": 1475,
+   "pad_to_tip_m": 0.00942038524888945,
+   "thresholds_m": [
+    0.013984498300214364,
+    0.016180765229140408
+   ],
+   "events": [
+    {
+     "cross": 100,
+     "contact": 110,
+     "release": 131,
+     "open": 135,
+     "gap_mm": 8.878936869846198,
+     "sync_clap": true
+    },
+    {
+     "cross": 198,
+     "contact": 217,
+     "release": 630,
+     "open": 632,
+     "gap_mm": 9.38074527267473
+    },
+    {
+     "cross": 671,
+     "contact": 737,
+     "release": 1129,
+     "open": 1131,
+     "gap_mm": 9.454488317939479
+    },
+    {
+     "cross": 1259,
+     "contact": 1260,
+     "release": 1292,
+     "open": 1311,
+     "gap_mm": 10.1444269445397
+    }
+   ]
+  },
+  "right": {
+   "n": 1475,
+   "pad_to_tip_m": 0.009349758884080274,
+   "thresholds_m": [
+    0.01483233129267153,
+    0.016893485001299276
+   ],
+   "events": [
+    {
+     "cross": 105,
+     "contact": 105,
+     "release": 127,
+     "open": 133,
+     "gap_mm": 14.245342816304255,
+     "sync_clap": true
+    },
+    {
+     "cross": 292,
+     "contact": 294,
+     "release": 329,
+     "open": 331,
+     "gap_mm": 10.211128217746078
+    },
+    {
+     "cross": 353,
+     "contact": 355,
+     "release": 407,
+     "open": 409,
+     "gap_mm": 10.691957574176124
+    },
+    {
+     "cross": 433,
+     "contact": 435,
+     "release": 494,
+     "open": 502,
+     "gap_mm": 10.164820910322124
+    },
+    {
+     "cross": 530,
+     "contact": 536,
+     "release": 651,
+     "open": 653,
+     "gap_mm": 10.530018009203324
+    },
+    {
+     "cross": 807,
+     "contact": 822,
+     "release": 853,
+     "open": 856,
+     "gap_mm": 10.098857130882685
+    },
+    {
+     "cross": 881,
+     "contact": 890,
+     "release": 925,
+     "open": 927,
+     "gap_mm": 10.970179724504737
+    },
+    {
+     "cross": 956,
+     "contact": 959,
+     "release": 1006,
+     "open": 1009,
+     "gap_mm": 10.111801776911554
+    },
+    {
+     "cross": 1043,
+     "contact": 1044,
+     "release": 1164,
+     "open": 1171,
+     "gap_mm": 10.587728712125076
+    },
+    {
+     "cross": 1191,
+     "contact": 1193,
+     "release": 1245,
+     "open": 1275,
+     "gap_mm": 12.57930192049048
+    }
+   ]
+  }
+ }
+}
