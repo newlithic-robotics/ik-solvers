@@ -63,7 +63,10 @@ def _urdf_with_extension(tmp: Path) -> Path:
            '<link name="root"/><joint name="root_fixed" type="fixed"><parent link="root"/><child link="base_link"/></joint>')
     k = urdf.index(">", urdf.index("<robot")) + 1
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(urdf[:k] + ext + urdf[k:], encoding="utf-8")
+    text = urdf[:k] + ext + urdf[k:]
+    # written only when it changes: solves running in parallel processes read this file while others would rewrite it
+    if not tmp.exists() or tmp.read_text(encoding="utf-8") != text:
+        tmp.write_text(text, encoding="utf-8")
     return tmp
 
 

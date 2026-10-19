@@ -70,6 +70,25 @@ def cmd_solve(a):
     return written
 
 
+def cmd_collection(a):
+    from .collection import DEFAULT_TASKS, run_collection
+    tasks = dict(DEFAULT_TASKS)
+    for item in a.task:
+        k, _, v = item.partition("=")
+        tasks[int(k)] = v
+    stages = tuple(s.strip() for s in a.stages.split(",") if s.strip())
+    if "export" in stages and not (a.dataset and a.repo_id):
+        raise SystemExit("the export stage needs --dataset and --repo-id")
+    if "export-ee" in stages and not (a.ee_dataset and a.ee_repo_id):
+        raise SystemExit("the export-ee stage needs --ee-dataset and --ee-repo-id")
+    m = run_collection([Path(s) for s in a.session], Path(a.work), Path(a.dataset) if a.dataset else None, a.repo_id, stages=stages, jobs=a.jobs,
+                       fps=a.fps, tasks=tasks, only=a.only, force=a.force, solve_kw=dict(max_nfev=a.max_nfev),
+                       export_kw=dict(vcodec=a.vcodec, extras=not a.no_extras), render=not a.no_render,
+                       placements_mm=({"left": a.left, "right": a.right} if a.left and a.right else None),
+                       ee_dataset=Path(a.ee_dataset) if a.ee_dataset else None, ee_repo_id=a.ee_repo_id)
+    print(f"{len(m['episodes'])} episodes in the manifest, {len(m['failed'])} recordings failed -> {Path(a.work) / 'manifest.json'}")
+
+
 def _export_config(a):
     from .export import ExportConfig
     from .features import Units, load_calibration
@@ -147,7 +166,7 @@ def _add_wrist_args(p):
     p.add_argument("--height", type=int, default=880)
     p.add_argument("--hfov-deg", type=float, default=100.0)
     p.add_argument("--tcp-row", type=float, default=0.70, help="where the TCP sits in the image height (0 top .. 1 bottom)")
-    p.add_argument("--src-scale", type=int, default=2, help="shrink the 2880 px fisheye frames by this before remapping")
+    p.add_argument("--src-scale", type=int, default=None, help="shrink the fisheye frames by this before remapping (default: to about 1440 px)")
     p.add_argument("--crf", type=int, default=18)
 
 
@@ -236,6 +255,28 @@ def main(argv=None):
     p.add_argument("--work", required=True, help="directory for the demonstration file, the videos and the retargeted episode")
     p.add_argument("--dataset", required=True, help="dataset root directory")
     p.set_defaults(fn=cmd_pipeline)
+
+    c = sub.add_parser("collection", help="sessions of reviewed episodes (many per recording, any recording mode) -> one dataset")
+    c.add_argument("--session", action="append", required=True, help="a state-estimation session folder (pose/, aperture/, raw/, "
+                                                                     "episodes/episodes_reviewed.json); repeat per session")
+    c.add_argument("--work", required=True, help="directory for the per-episode demonstrations, wrist videos and retargeted episodes")
+    c.add_argument("--dataset", help="dataset root directory (export stage)")
+    c.add_argument("--repo-id", help="hub id the dataset is written under")
+    c.add_argument("--stages", default="prepare,solve,export", help="comma-separated subset of prepare,solve,export,export-ee")
+    c.add_argument("--ee-dataset", help="end-effector training dataset root (export-ee stage): grip poses and openings, no joints")
+    c.add_argument("--ee-repo-id", help="hub id the end-effector dataset is written under")
+    c.add_argument("--jobs", type=int, default=8, help="recordings prepared / episodes solved in parallel")
+    c.add_argument("--fps", type=int, default=30)
+    c.add_argument("--task", action="append", default=[], metavar="ID=TEXT", help="task string for a spoken task id; repeat per id")
+    c.add_argument("--only", help="only recordings / episodes whose name contains this text")
+    c.add_argument("--force", action="store_true", help="redo what already exists")
+    c.add_argument("--max-nfev", type=int, default=40, help="trajectory optimiser budget per arm")
+    c.add_argument("--vcodec", choices=("libsvtav1", "h264", "hevc"), default="libsvtav1")
+    c.add_argument("--no-extras", action="store_true", help="only state / action / images in the dataset")
+    c.add_argument("--no-render", action="store_true", help="prepare the demonstrations only, no wrist videos")
+    c.add_argument("--left", type=_placement, help="left base x_mm,y_mm,yaw_deg relative to the left dock (Episode-1's world); default: the findings'")
+    c.add_argument("--right", type=_placement, help="right base, same frame")
+    c.set_defaults(fn=cmd_collection)
 
     a = ap.parse_args(argv)
     return a.fn(a)

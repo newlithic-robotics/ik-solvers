@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Generated using onshape-to-robot -->
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
-<robot name="so101_new_calib"><mujoco><compiler meshdir="C:/Users/singh/Documents/projects/robotics/ik-solver/ik-solvers/assets/meshes" balanceinertia="true" discardvisual="true" strippath="true" fusestatic="false"/></mujoco><link name="root"/><joint name="root_fixed" type="fixed"><parent link="root"/><child link="base_link"/></joint>
+<robot name="so101_new_calib"><mujoco><compiler meshdir="C:/Users/Build/Documents/software/ik-solvers/assets/meshes" balanceinertia="true" discardvisual="true" strippath="true" fusestatic="false"/></mujoco><link name="root"/><joint name="root_fixed" type="fixed"><parent link="root"/><child link="base_link"/></joint>
 
   <!-- Materials -->
   <material name="3d_printed">

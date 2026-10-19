@@ -25,8 +25,20 @@ from .demo_export import Rig, load_registration, load_rig, skeleton_tcp
 FPS = "30000/1001"
 
 
+def lens1_window(path) -> tuple:
+    """(x0, width, height) of lens 1 inside the frames of `path`: the whole frame of a 5.7K lens file, the right half of a
+    3K dual-fisheye file (2944 x 1472: lens 0 left, lens 1 right)."""
+    import cv2
+    cap = cv2.VideoCapture(str(path))
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    if not h:
+        raise FileNotFoundError(f"cannot open {path}")
+    return (w // 2, w // 2, h) if w == 2 * h else (0, w, h)
+
+
 class WristView:
-    def __init__(self, rig: Rig, W: int = 640, H: int = 880, hfov_deg: float = 100.0, tcp_row: float = 0.70, src_scale: int = 2):
+    def __init__(self, rig: Rig, W: int = 640, H: int = 880, hfov_deg: float = 100.0, tcp_row: float = 0.70, src_scale: Optional[int] = None):
         import cv2
         from state_estimation.gripper import jaw_points, tips
         from state_estimation.mei import MeiCamera
@@ -34,7 +46,11 @@ class WristView:
         if not rig.files.get(1):
             raise FileNotFoundError(f"{rig.name}: the lens-1 .insv of clip {rig.stem} was not found under the data directory")
         tm = read_telemetry(rig.files[0] or rig.files[1])
-        cam = MeiCamera.from_offset_v3(tm.offset_v3, 1, tm.crop)
+        self.x0, lens_w, lens_h = lens1_window(rig.files[1])
+        cam = MeiCamera.from_offset_v3(tm.offset_v3, 1, tm.crop, video_size=(lens_w, lens_h))
+        if src_scale is None:
+            src_scale = max(1, round(lens_w / 1440))               # remap from ~1440 px: half of a 5.7K lens, all of a 3K one
+        self.lens_w = lens_w
         self.rig, self.W, self.H, self.src_scale = rig, int(W), int(H), int(src_scale)
         T = rig.T_lens_base
         qL, qR = np.median(rig.q, 0)
@@ -72,7 +88,7 @@ class WristView:
 class Reader:
     """Sequential frames of one lens file from a starting frame; get(i) with non-decreasing i (repeats allowed)."""
 
-    def __init__(self, path, start, scale):
+    def __init__(self, path, start, scale, x0: int = 0, width: Optional[int] = None):
         import cv2
         self._cv2 = cv2
         self.cap = cv2.VideoCapture(str(path))
@@ -80,6 +96,7 @@ class Reader:
             raise FileNotFoundError(f"cannot open {path}")
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(start))
         self.next, self.img, self.scale = int(start), None, scale
+        self.x0, self.width = int(x0), width
 
     def get(self, i):
         i = int(i)
@@ -89,6 +106,8 @@ class Reader:
         while self.next <= i:
             ok, im = self.cap.read()
             self.next += 1
+            if ok and self.width:
+                im = im[:, self.x0:self.x0 + self.width]
             if ok:
                 self.img = (self._cv2.resize(im, (im.shape[1] // self.scale, im.shape[0] // self.scale), interpolation=self._cv2.INTER_AREA)
                             if self.scale > 1 else im)
@@ -105,8 +124,8 @@ def ffmpeg_exe() -> str:
         return "ffmpeg"
 
 
-def writer(path, W, H, crf=18, preset="medium"):
-    return subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", FPS, "-i", "-",
+def writer(path, W, H, crf=18, preset="medium", fps: str = FPS):
+    return subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps), "-i", "-",
                              "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p", "-threads", "4",
                              "-x264-params", "keyint=60:min-keyint=60:scenecut=0", str(path)], stdin=subprocess.PIPE)
 
@@ -130,7 +149,8 @@ def _work(job):
     L, R = rigs["left"], rigs["right"]
     vw = {n: WristView(r, **view_kw) for n, r in rigs.items()}
     m_of = R.frame_at(L.t)
-    rd = {"left": Reader(L.files[1], start, vw["left"].src_scale), "right": Reader(R.files[1], m_of[start], vw["right"].src_scale)}
+    rd = {"left": Reader(L.files[1], start, vw["left"].src_scale, vw["left"].x0, vw["left"].lens_w),
+          "right": Reader(R.files[1], m_of[start], vw["right"].src_scale, vw["right"].x0, vw["right"].lens_w)}
     ff = {n: writer(paths[n], vw[n].W, vw[n].H, crf=crf) for n in rigs}
     t0 = time.time()
     for i in range(start, end):
@@ -143,7 +163,7 @@ def _work(job):
 
 
 def render_wrist_videos(results: Path, episode: str, data: Path, out_dir: Path, workers: int = 4, frames: Optional[tuple] = None,
-                        W: int = 640, H: int = 880, hfov_deg: float = 100.0, tcp_row: float = 0.70, src_scale: int = 2, crf: int = 18,
+                        W: int = 640, H: int = 880, hfov_deg: float = 100.0, tcp_row: float = 0.70, src_scale: Optional[int] = None, crf: int = 18,
                         log=print) -> dict:
     """Writes <out_dir>/<episode>_wrist_left.mp4 and _right.mp4 (640 x 880 by default, 29.97 fps, one frame per demonstration frame).
     frames: (a, b) sub-range of the left clip's frames, for tests.  Returns name -> path."""

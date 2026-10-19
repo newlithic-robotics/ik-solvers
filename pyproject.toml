@@ -12,7 +12,7 @@ dependencies = ["numpy>=1.26", "scipy>=1.11"]
 [project.optional-dependencies]
 # stage 0: the demonstration export and the wrist videos from the state-estimation pipeline's outputs
 demo = [
-    "newlithic-state-estimation @ git+https://github.com/newlithic-robotics/state-estimation.git@world-pose",
+    "newlithic-state-estimation @ git+https://github.com/newlithic-robotics/state-estimation.git@pipeline-3k",
     "pandas>=2.0", "opencv-contrib-python>=4.8,<5", "imageio-ffmpeg>=0.5",
 ]
 # stage 1: the arm model and the solvers (the `newlithic` package)
@@ -31,3 +31,9 @@ packages = ["newlithic", "newlithic_lerobot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+# The demo stage reads the recordings with the state-estimation package, from the branch the data station uses (3K clips, the
+# station's sessions; newlithic-robotics/data-station shows which commit each environment runs).  To work on both together,
+# replace it locally with:  newlithic-state-estimation = { path = "../state-estimation", editable = true }
+newlithic-state-estimation = { git = "https://github.com/newlithic-robotics/state-estimation.git", branch = "pipeline-3k" }

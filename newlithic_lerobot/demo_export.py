@@ -65,7 +65,10 @@ def find_insv(data: Optional[Path], stem: str, lens: int) -> Optional[Path]:
     """The raw Insta360 file of a lens (0 = screen side, 1 = behind the jaws), anywhere under `data`."""
     if data is None:
         return None
-    hits = sorted(Path(data).rglob(f"{stem}_{lens}0_001.insv"))
+    hits = sorted(Path(data).rglob(f"{stem}_{lens}0_*.insv"))
+    if not hits and lens == 1:
+        # 3K mode: one _00_ file holds both lenses side by side (lens 1 in the right half); wrist.lens1_window crops it
+        hits = sorted(Path(data).rglob(f"{stem}_00_*.insv"))
     return hits[0] if hits else None
 
 
