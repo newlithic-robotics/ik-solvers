@@ -2898,7 +2898,7 @@ provides-extras = ["demo", "solve", "export", "all", "test"]
 [[package]]
 name = "newlithic-state-estimation"
 version = "0.1.0"
-source = { git = "https://github.com/newlithic-robotics/state-estimation.git?branch=pipeline-3k#75b830af14e3a227d24cc8adde76faf3fcfbdc13" }
+source = { git = "https://github.com/newlithic-robotics/state-estimation.git?branch=pipeline-3k#46e509017b6ee796baea5f7fc0b253ff5c7b6df7" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
