@@ -37,3 +37,16 @@ def test_features_name_twenty_numbers_and_two_cameras():
     f = features({"left_wrist": (880, 640), "right_wrist": (880, 640)})
     assert f["observation.state"]["shape"] == (20,) and f["action"]["names"] == names()
     assert f["observation.images.right_wrist"]["shape"] == (880, 640, 3)
+
+
+def test_only_the_latest_previous_copy_is_kept(tmp_path):
+    from newlithic_lerobot.ee_dataset import prune_previous
+    root = tmp_path / "glove_bimanual_ee"
+    root.mkdir()
+    old = [tmp_path / f"glove_bimanual_ee.previous-2026102{i}_120000" for i in range(3)]
+    for p in old:
+        (p / "meta").mkdir(parents=True)
+    (tmp_path / "glove_bimanual_ee.next").mkdir()                              # not a previous copy: left alone
+    gone = prune_previous(root, keep=old[-1], log=lambda m: None)
+    assert sorted(gone) == sorted(p.name for p in old[:2])
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["glove_bimanual_ee", "glove_bimanual_ee.next", old[-1].name]

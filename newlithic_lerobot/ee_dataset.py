@@ -22,7 +22,8 @@ episode estimated in its own window (state-estimation, after QA) has no other re
 coordinates in every episode.  reanchor_ee_dataset rewrites a dataset's poses when the dock frames change, keeping its videos.
 
 Adding sessions: the current dataset is copied to <root>.next, the new episodes are appended there, the copy is reloaded and
-counted, and only then does it replace <root>; the replaced dataset is kept as <root>.previous-<time>.
+counted, and only then does it replace <root>; the replaced dataset is kept as <root>.previous-<time> (only the latest such
+copy: prune_previous deletes the older ones).
 """
 from __future__ import annotations
 
@@ -73,6 +74,34 @@ def ee_frames(demo_path, anchor: dict, action_lead: int = 1) -> dict:
     return {"state": state, "action": state[lead], "phase": np.stack(phase, 1), "valid": np.stack(valid, 1), "n": len(state)}
 
 
+def prune_previous(root: Path, keep: Path | None = None, log=print) -> list:
+    """Deletes the older <root>.previous-<time> copies: only `keep` (the one just replaced) stays as the way back.  Each is a whole
+    dataset, so without this every session added would leave another one behind."""
+    import shutil
+    gone = []
+    for p in sorted(root.parent.glob(f"{root.name}.previous-*")):
+        if keep is not None and p.resolve() == Path(keep).resolve():
+            continue
+        shutil.rmtree(p, ignore_errors=True)
+        gone.append(p.name)
+    if gone:
+        log(f"older copies deleted: {', '.join(gone)}")
+    return gone
+
+
+def _codec_kwargs(vcodec: str) -> dict:
+    """lerobot <= 0.5 takes `vcodec=`; 0.6+ takes `rgb_encoder=RGBEncoderConfig(vcodec=...)`."""
+    import inspect
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    params = inspect.signature(LeRobotDataset.create).parameters
+    if "vcodec" in params:
+        return {"vcodec": vcodec}
+    if "rgb_encoder" in params:
+        from lerobot.configs.video import RGBEncoderConfig
+        return {"rgb_encoder": RGBEncoderConfig(vcodec=vcodec)}
+    return {}
+
+
 def features(cam_shapes: dict) -> dict:
     n = names()
     f = {"observation.state": {"dtype": "float32", "shape": (len(n),), "names": n},
@@ -109,7 +138,6 @@ def write_ee_dataset(records: list, root: Path, repo_id: str, fps: int = 30, vco
     it when absent.  Episodes already in it (by name, from meta/newlithic_ee.json) are skipped.  Returns the dataset summary."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    from .export import _codec_kwargs
     from .video import VideoFrames
     root = Path(root)
     side = "newlithic_ee.json"
@@ -135,7 +163,7 @@ def write_ee_dataset(records: list, root: Path, repo_id: str, fps: int = 30, vco
         ds = LeRobotDataset.create(repo_id, fps=fps, features=feats, root=work, robot_type=ROBOT_TYPE, use_videos=True,
                                    image_writer_threads=image_writer_threads, **_codec_kwargs(vcodec))
     record = existing or {"newlithic_lerobot": __version__, "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                          "robot_type": ROBOT_TYPE, "frame": "left dock: origin at the docked left grip on the table plane, x along its heading, z up",
+                          "robot_type": ROBOT_TYPE, "frame": "the episode's left dock: origin at the left grip resting just before the episode, on the table plane, x along its heading, z up",
                           "state": names(), "action": "state one frame later", "fps": fps, "episodes": []}
     total = 0
     for i, rec in enumerate(todo, 1):
@@ -157,6 +185,7 @@ def write_ee_dataset(records: list, root: Path, repo_id: str, fps: int = 30, vco
         prev = root.with_name(f"{root.name}.previous-{datetime.now():%Y%m%d_%H%M%S}")
         root.rename(prev)
     work.rename(root)
+    prune_previous(root, keep=prev, log=log)
     log(f"done: {len(todo)} episode(s), {total} frames added -> {root} ({want} episodes)" + (f"; the previous dataset is {prev.name}" if prev else ""))
     return {"root": str(root), "added": len(todo), "episodes": want, "previous": str(prev) if prev else None}
 
@@ -276,6 +305,7 @@ def reanchor_ee_dataset(root: Path, anchors: dict, repo_id: str | None = None, l
     prev = root.with_name(f"{root.name}.previous-{datetime.now():%Y%m%d_%H%M%S}")
     root.rename(prev)
     work.rename(root)
+    prune_previous(root, keep=prev, log=log)
     log(f"reanchor: done, {rows_done} frames of {len(eps)} episodes in their own dock frames -> {root}; the previous dataset is {prev.name}")
     return {"root": str(root), "episodes": len(eps), "frames": rows_done, "previous": str(prev)}
 

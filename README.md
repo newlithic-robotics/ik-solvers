@@ -1,18 +1,22 @@
 # ik-solvers
 
-Everything needed to turn a UMI-style human demonstration (two Insta360 X3 hand rigs) into a **LeRobot training dataset for
-two SO-ARM101 arms carrying the Newlithic gripper**, in one repository:
+Everything needed to turn UMI-style human demonstrations (two Insta360 X3 hand rigs with the Newlithic gripper) into the
+**end-effector LeRobot training dataset**, and to check whether a pair of arms could follow them (the IK check), in one
+repository:
 
 | package | what it is |
 |---|---|
 | `newlithic/` | the arm with the Newlithic gripper as a MuJoCo model (lerobot's SO-ARM101 URDF with the stock gripper replaced by the CAD), the IK solvers (per-frame least squares, differential QP, whole-trajectory optimiser, bimanual QP), base-placement search, collision and gravity checks, the cell and its replay |
-| `newlithic_lerobot/` | the pipeline: state-estimation results → demonstration → wrist videos → joint trajectories → LeRobotDataset v3.0 |
+| `newlithic_lerobot/` | the pipeline: state-estimation results → demonstration → wrist videos → the end-effector dataset (`ee_dataset.py`); and the IK check (`solve`): joint trajectories as a QA diagnostic |
 | `assets/` | the gripper CAD (meshes, measurements, masses), the SO-101 meshes and URDF, the jig and plate, and the Episode-1 demonstration |
 | `scripts/` | the controller's own entry points: `place.py` (base placement), `compare.py` (solver comparison), `replay.py` (kinematic / physics video), `layout.py` (cell drawing and 1:1 templates), `build_model.py`, `build_scene.py` |
 | `docs/findings.md` | what was learned on Episode-1: the arm's limits, placements, solver comparison, physics replay, open items |
 
-The only external piece is the state-estimation pipeline (`newlithic-robotics/state-estimation`, branch `world-pose`), which
-produces the per-frame poses and jaw angles the first stage reads; it is installed as a dependency.
+The training data holds no joints: a policy trained on it outputs grip poses and openings, and whoever runs it on an arm adds
+that arm's inverse kinematics at inference.  The only external piece is the state-estimation pipeline
+(`newlithic-robotics/state-estimation`, branch `pipeline-3k`), which produces the per-frame poses and jaw angles the first
+stage reads; it is installed as a dependency.  The data station (`newlithic-robotics/data-station`) runs all of this for every
+uploaded session.
 
 ## Install
 
@@ -22,7 +26,7 @@ on 3.10 too):
 ```bash
 git clone https://github.com/newlithic-robotics/ik-solvers.git && cd ik-solvers
 uv venv .venv --python 3.12
-uv pip install -e ".[all]"          # or a subset: .[demo] .[solve] .[export]
+uv pip install -e ".[all]"          # or a subset: .[demo] .[solve] .[export] (export: the dataset writer)
 ```
 
 `.[demo]` pulls the state-estimation package from its private GitHub repository, so git needs credentials for the
@@ -36,27 +40,25 @@ to PyAV; the dataset is unaffected (`pip uninstall torchcodec` silences it).
 ## The pipeline
 
 ```
-state-estimation results ──demo-export──▶ <episode>.npz/.json ──solve──▶ <episode>_retargeted.npz/.json ──export──▶ LeRobotDataset
-raw .insv files          ──render-wrist─▶ <episode>_wrist_{left,right}.mp4 ─────────────────────────────────┘
+state-estimation results ──demo-export──▶ <episode>.npz/.json ──export-ee──▶ end-effector LeRobotDataset (training data)
+raw .insv files          ──render-wrist─▶ <episode>_wrist_{left,right}.mp4 ─────┘
+                                          <episode>.npz/.json ──solve──▶ <episode>_retargeted.npz/.json (the IK check)
 ```
 
-One command does all of it for an episode:
+For sessions of the data station (many reviewed episodes per recording), one command:
 
 ```bash
-newlithic-lerobot pipeline \
-    --results /path/to/state-estimation/results --episode Episode-1 --data /path/to/raw/Episode-1 \
-    --left=-40.3,-171.5,37.5 --right=336.5,525.8,225.0 \
-    --work out/Episode-1 --dataset datasets/so101_unscrew --repo-id newlithic/so101_unscrew
+newlithic-lerobot collection --session <work>/<date>/<set> --work <work>/lerobot/work \
+    --stages prepare,export-ee --ee-dataset <work>/lerobot/glove_bimanual_ee --ee-repo-id newlithic-robotics/glove_bimanual_ee
+newlithic-lerobot collection --session <work>/<date>/<set> --work <work>/lerobot/work --stages prepare,solve      # the IK check
 ```
 
-or stage by stage:
+For one episode of a results folder, stage by stage:
 
 ```bash
 newlithic-lerobot demo-export  --results R --episode Episode-1 --out out/Episode-1/
 newlithic-lerobot render-wrist --results R --episode Episode-1 --data D --out out/Episode-1/
 newlithic-lerobot solve        --demo out/Episode-1/Episode-1.npz --left=-40.3,-171.5,37.5 --right=336.5,525.8,225.0 --out out/Episode-1/
-newlithic-lerobot export       out/Episode-1/Episode-1_retargeted.npz --out datasets/so101_unscrew --repo-id newlithic/so101_unscrew \
-    --camera left_wrist=out/Episode-1/Episode-1_wrist_left.mp4 --camera right_wrist=out/Episode-1/Episode-1_wrist_right.mp4 --verify
 ```
 
 ### demo-export: state-estimation results → demonstration
@@ -99,36 +101,27 @@ The retargeted episode (`newlithic_lerobot/episode.py`) holds per hand the joint
 URDF zero), the jaw angle, the pad gap, phases, the demonstrated and the reached grip pose in that arm's base frame, the
 residuals, and the placements, solver configuration and provenance.
 
-### export: retargeted episode(s) + videos → LeRobotDataset v3.0
+### collection: sessions → the end-effector training dataset
 
-Per output frame, uniform at `--fps` (default 30; the demonstration's 29.97 fps is resampled):
+`prepare` turns every reviewed episode of a session into a demonstration on a 30 fps grid with its two wrist videos (in
+`<work>/episodes/`); a recording estimated per episode window (state-estimation after QA) is prepared window by window.
+`export-ee` appends the prepared episodes to the dataset (`newlithic_lerobot/ee_dataset.py`), per frame:
 
 | feature | shape | content |
 |---|---|---|
-| `observation.state` | (12,) float32 | the solved joints at that instant, `left_shoulder_pan.pos … left_gripper.pos, right_shoulder_pan.pos … right_gripper.pos` (lerobot's `bi_so_follower` names) |
-| `action` | (12,) float32 | the state `--action-lead` frames later (default 1): the setpoint the arms move toward, the relation `lerobot-record` stores between leader and follower |
-| `observation.images.<camera>` | (H, W, 3) video | the camera frame nearest to that instant; `--camera name=path`, paths may contain `{episode}` / `{stem}` |
-| `observation.grip_pose` | (14,) float32 | demonstrated grip pose per hand in its arm's base frame, `x y z qw qx qy qz` (`--no-extras` drops the three extras) |
-| `observation.phase` | (2,) float32 | 0 transport, 1 grasp, 2 hold, 3 release, 4 approach |
-| `observation.gap_mm` | (2,) float32 | the pad gap the demonstration measured |
+| `observation.state` | (20,) float32 | per hand, left then right: grip position x, y, z [m], 6D rotation (the first two columns of the grip's rotation), pad gap [m] |
+| `action` | (20,) float32 | the state one frame later |
+| `observation.images.left_wrist` / `right_wrist` | (880, 640, 3) video | the wrist views of the same instant |
+| `observation.phase` | (2,) float32 | 0 transport, 1 grasp, 2 hold, 3 release, 4 approach (context, not for control) |
 
-Several episodes: pass every `.npz` to one `export`, or append later with `--resume`. `meta/newlithic_export.json` next to
-lerobot's metadata records placements, solver configuration, residual summaries and provenance per episode. `--verify`
-reloads the dataset with `LeRobotDataset` and decodes a frame per camera.
+All poses are in the episode's **left dock frame**: origin at the left grip resting just before the episode, on the table
+plane, x along its heading, z up.  Every episode is measured from its own rest (`collection.episode_dock`), because where the
+hand rests between episodes varies by centimetres and degrees.  Adding a session copies the dataset to `<root>.next`, appends,
+reloads and counts it, and only then replaces `<root>`; the replaced dataset is kept as the one `<root>.previous-<time>`.
+`reanchor-ee` rewrites a dataset's poses in new dock frames without re-encoding its videos.
 
-**Units** are a deployment decision and must match the robot config:
-
-* `--joint-units degrees` (default): the URDF / lerobot angle, zero at the middle of the calibrated travel, i.e.
-  `SOFollowerConfig(use_degrees=True)`.
-* `--joint-units range_m100_100 --calibration-dir <dir>`: lerobot's default normalisation, each servo's calibrated travel
-  mapped to [-100, 100] from that arm's calibration file (`left.json`, `right.json`, lerobot's format).
-* The gripper is always a percentage: 0 % = pads touching (jaw angle 0), 100 % = the jaw stop (45.6°, 144 mm gap), linear in
-  the jaw angle (`--gripper-open-percent 0` inverts it). Calibrate the real jaw servo with those two ends, or re-map the
-  column. The pad gap is 3.3 mm per degree of jaw angle (CAD law), so the demonstrated gap maps 1:1 onto it.
-
-**Time warp** (`--v-max-deg-s` on export, off by default) stretches the clock where a joint would exceed the cap, one warp
-for both arms so their relative timing is kept; camera frames repeat in the stretched parts. The trajectory optimiser already
-keeps Episode-1 within the servos' capability at 1:1 time.
+`solve` is the IK check: two SO-101 arms solved for every prepared episode, with their placements anchored on the episode's
+dock; the data station shows the median position and tilt errors.  It is a QA diagnostic and writes nothing into the dataset.
 
 ## Episode-1 numbers
 
@@ -139,8 +132,7 @@ keeps Episode-1 within the servos' capability at 1:1 time.
 | left | 0.10 mm | 9.7° | 82 °/s | 202 °/s² | 0.077 °/frame |
 | right | 3.32 mm (follows the screw the left holds; the pair is kept relative) | 11.9° | 89 °/s | 237 °/s² | 0.076 °/frame |
 
-The findings' bimanual QP alone: 0.08 mm, 9.9°, accel p95 814 °/s², smoothness 0.31 °/frame. The exported dataset: 1476
-frames at 30 fps, two 640 × 880 AV1 videos, 31 MB.
+The findings' bimanual QP alone: 0.08 mm, 9.9°, accel p95 814 °/s², smoothness 0.31 °/frame.
 
 ## Conventions and open items (from the findings)
 
@@ -148,7 +140,7 @@ frames at 30 fps, two 640 × 880 AV1 videos, 31 MB.
 * The demonstration's opening axis is from the R jaw toward the L jaw; the sign the other way flips the camera side and nothing fits.
 * The reference surface is the plate top; the arm's own table height (`TABLE_Z_BASE`) was measured on the stock arm and must
   be re-measured on the new one before anything is replayed on hardware.
-* No robot was involved: `observation.state` is the kinematic solution. The physics replay tracks it to 0.1–0.55° mean per
+* No robot was involved: the IK check's joints are the kinematic solution. The physics replay tracks it to 0.1–0.55° mean per
   joint with gravity feed-forward; the real arm with this gripper has not been built.
 * The right wrist camera sees the human's hand holding the left rig, as any UMI recording does.
 * The ~10° orientation residual is the 5-DoF arm plus base placement, not the solver; the docked start and end poses are 33°

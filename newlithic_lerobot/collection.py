@@ -257,15 +257,16 @@ def load_reviewed(session: Path) -> dict:
     return out
 
 
-def run_collection(sessions: list, work: Path, dataset: Optional[Path] = None, repo_id: Optional[str] = None, stages=("prepare", "solve", "export"),
+def run_collection(sessions: list, work: Path, stages=("prepare", "solve"),
                    jobs: int = 8, fps: int = 30, tasks: Optional[dict] = None, only: Optional[str] = None, force: bool = False,
                    solve_kw: Optional[dict] = None, export_kw: Optional[dict] = None, render: bool = True,
                    placements_mm: Optional[dict] = None, ee_dataset: Optional[Path] = None, ee_repo_id: Optional[str] = None,
                    log=print) -> dict:
     """placements_mm: hand -> (x_mm, y_mm, yaw_deg) of the bases in the reference frame (Episode-1's world, i.e. relative to
     the left dock); default: the findings' Episode-1 placements.
-    Stages: prepare, solve, export (the joint dataset of the solved episodes), export-ee (the end-effector training dataset of
-    the prepared episodes at `ee_dataset`, no solve needed; see ee_dataset.py)."""
+    Stages: prepare, solve (the IK check: can the arms follow?), export-ee (the end-effector training dataset of the prepared
+    episodes at `ee_dataset`, no solve needed; see ee_dataset.py), reanchor-ee (that dataset's poses in the anchors of the last
+    prepare).  There is no joint-space dataset: the joints are added at inference by whoever runs a policy on an arm."""
     work = Path(work)
     ep_dir = work / "episodes"
     ep_dir.mkdir(parents=True, exist_ok=True)
@@ -327,17 +328,6 @@ def run_collection(sessions: list, work: Path, dataset: Optional[Path] = None, r
                 if k % 5 == 0 or k == len(names):
                     manifest_path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
 
-    if "export" in stages:
-        from .export import ExportConfig, write_dataset
-        good = [n for n in names if manifest["episodes"][n].get("retargeted") and not manifest["episodes"][n].get("solve_error")]
-        if not good:
-            raise ValueError("nothing solved to export")
-        cameras = {"left_wrist": str(ep_dir / "{episode}_wrist_left.mp4"), "right_wrist": str(ep_dir / "{episode}_wrist_right.mp4")}
-        log(f"export: {len(good)} episodes -> {dataset}")
-        write_dataset([manifest["episodes"][n]["retargeted"] for n in good], Path(dataset), repo_id, ExportConfig(fps=fps, **(export_kw or {})),
-                      cameras=cameras, log=log)
-        manifest["dataset"] = dict(root=str(dataset), repo_id=repo_id, episodes=good)
-        manifest_path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     if "reanchor-ee" in stages:                                                # the dataset's poses in each episode's own dock frame
         from .ee_dataset import reanchor_ee_dataset
         res = reanchor_ee_dataset(Path(ee_dataset), {n: e["anchor"] for n, e in manifest["episodes"].items() if e.get("anchor")}, ee_repo_id, log=log)
