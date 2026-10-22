@@ -90,22 +90,42 @@ class Rig:
     map_X: np.ndarray            # (L,3) landmarks, common world
     summary: dict
     files: dict = field(default_factory=dict)       # lens -> raw .insv path (if the data directory was given)
+    frame0: int = 0                                  # video frame of row 0 (a segment of a clip solved per episode window)
 
     def frame_at(self, t) -> np.ndarray:
-        """Index of the frame whose instant is nearest to common-clock time t."""
+        """Index of the row whose instant is nearest to common-clock time t (its video frame is frame0 + that)."""
         t = np.atleast_1d(np.asarray(t, float))
         i = np.clip(np.searchsorted(self.t, t), 1, self.n - 1)
         return np.where(np.abs(self.t[i - 1] - t) <= np.abs(self.t[i] - t), i - 1, i)
 
 
-def load_registration(results: Path, episode: str) -> dict:
+def segment_of_episodes(results: Path, episode: str) -> Optional[dict]:
+    """episode index -> segment, for a recording estimated per episode window (state-estimation pose with windows); None for one
+    estimated as a whole."""
     b = json.loads((Path(results) / "pose" / episode / "bimanual_summary.json").read_text(encoding="utf-8"))
-    reg = b["registration"]
+    if not b.get("windowed"):
+        return None
+    return {int(i): int(s["segment"]) for s in b["segments"] for i in s["episodes"]}
+
+
+def load_registration(results: Path, episode: str, segment: Optional[int] = None) -> dict:
+    b = json.loads((Path(results) / "pose" / episode / "bimanual_summary.json").read_text(encoding="utf-8"))
+    if b.get("windowed"):                                                    # one registration and clock offset per episode window
+        if segment is None:
+            raise ValueError(f"{episode} was estimated per episode window: name the segment")
+        seg = next((s for s in b["segments"] if int(s["segment"]) == int(segment)), None)
+        if seg is None:
+            raise ValueError(f"{episode} segment {segment} was not put on one clock: {b.get('segments_failed', {}).get(str(segment), 'not merged')}")
+        reg, offset = seg["registration"], seg["clock_offset_s"]
+    else:
+        reg, offset = b["registration"], b["clock_offset_s"]
     return dict(scale=float(reg["scale_b_over_a"]), R=np.array(reg["R"], float), t=np.array(reg["t"], float),
-                clock_offset_s=float(b["clock_offset_s"]), summary=b)
+                clock_offset_s=float(offset), summary=b, segment=segment)
 
 
-def load_rig(results: Path, episode: str, name: str, data: Optional[Path] = None, registration: Optional[dict] = None) -> Rig:
+def load_rig(results: Path, episode: str, name: str, data: Optional[Path] = None, registration: Optional[dict] = None,
+             segment: Optional[int] = None) -> Rig:
+    """segment: for a clip solved per episode window, only that window's rows (in its own world); Rig.frame0 is its first frame."""
     import pandas as pd
     from scipy.spatial.transform import Rotation as Rot
     from state_estimation.gripper import load_geometry
@@ -118,7 +138,14 @@ def load_rig(results: Path, episode: str, name: str, data: Optional[Path] = None
     summ = json.loads((pose_dir / f"{stem}_pose_summary.json").read_text(encoding="utf-8"))
     if "t_pose_video_s" not in tab:
         raise ValueError(f"{stem}_pose.csv has no t_pose_video_s column: re-run `pose` with a current state-estimation")
-    reg = registration or load_registration(results, episode)
+    frame0 = 0
+    if segment is not None:
+        rows = np.flatnonzero(tab["segment"].values == int(segment))
+        if not len(rows):
+            raise ValueError(f"{stem}: no rows of segment {segment}")
+        frame0 = int(rows[0])
+        tab = tab.iloc[rows[0]:rows[-1] + 1].reset_index(drop=True)
+    reg = registration or load_registration(results, episode, segment)
     if side == "LHS":
         s, Rr, tr = 1.0, np.eye(3), np.zeros(3)
         t_common = tab.t_pose_video_s.values
@@ -130,7 +157,7 @@ def load_rig(results: Path, episode: str, name: str, data: Optional[Path] = None
         R[g] = Rr @ Rot.from_quat(tab[[f"{g}_qx", f"{g}_qy", f"{g}_qz", f"{g}_qw"]].values).as_matrix()
         p[g] = s * tab[[f"{g}_x", f"{g}_y", f"{g}_z"]].values @ Rr.T + tr
     ap_dir = find_aperture_dir(results, episode, side, stem)
-    ap = pd.read_csv(ap_dir / f"{stem}_aperture.csv").set_index("frame").reindex(range(len(tab)))
+    ap = pd.read_csv(ap_dir / f"{stem}_aperture.csv").set_index("frame").reindex(range(frame0, frame0 + len(tab)))
     q = np.radians(ap[["q_left_deg", "q_right_deg"]].interpolate(limit_direction="both").values)
     ap_meta = json.loads((ap_dir / f"{stem}_summary.json").read_text(encoding="utf-8"))
     geom = load_geometry(marker_size_mm=ap_meta["sticker_size_mm"])
@@ -138,7 +165,8 @@ def load_rig(results: Path, episode: str, name: str, data: Optional[Path] = None
     files = {lens: find_insv(data, stem, lens) for lens in (0, 1)} if data else {}
     return Rig(side=side, name=name, stem=stem, n=len(tab), fps=float(summ["fps"]), t=t_common.astype(float),
                valid=tab.valid.values.astype(bool), R=R, p=p, q=q, geom=geom, T_lens_base=np.array(summ["T_lens1_base"], float),
-               lever_scale=s, map_X=s * m["landmarks"] @ Rr.T + tr, summary=summ, files=files)
+               lever_scale=s, map_X=s * m["landmarks" if segment is None else f"s{int(segment)}_landmarks"] @ Rr.T + tr, summary=summ, files=files,
+               frame0=frame0)
 
 
 # ----------------------------------------------------------------------------- phases from the gap
@@ -316,10 +344,11 @@ def drop_sync_claps(hands: dict, max_s: float = 1.6, within_s: float = 0.6) -> l
 
 # ----------------------------------------------------------------------------- the export
 def build_demo(results: Path, episode: str, data: Optional[Path] = None, jig_gap_mm: Optional[float] = 22.4,
-               gap_offset_m=0.0, sync_claps: bool = True, hands=("left", "right")) -> dict:
-    """Returns dict(episode, fps, table_z, hands: name -> Hand, notes, rigs: name -> Rig)."""
-    reg = load_registration(results, episode)
-    rigs = {name: load_rig(results, episode, name, data, reg) for name in hands}
+               gap_offset_m=0.0, sync_claps: bool = True, hands=("left", "right"), segment: Optional[int] = None) -> dict:
+    """Returns dict(episode, fps, table_z, hands: name -> Hand, notes, rigs: name -> Rig).  segment: one episode window of a
+    recording estimated per window (its own world, so its own table height and jig calibration)."""
+    reg = load_registration(results, episode, segment)
+    rigs = {name: load_rig(results, episode, name, data, reg, segment) for name in hands}
     table_z = table_height_from_map(list(rigs.values()))
     out, offsets = {}, {}
     for name, rig in rigs.items():
@@ -335,7 +364,7 @@ def build_demo(results: Path, episode: str, data: Optional[Path] = None, jig_gap
     fps = float(rigs[hands[0]].fps)
     notes = dict(gap_offset_m=offsets, jig_gap_mm=jig_gap_mm, sync_claps=claps, clock="left rig pose clock",
                  world="left rig world, gravity aligned, z up", clock_offset_s=reg["clock_offset_s"],
-                 registration_scale=reg["scale"], clips={n: r.stem for n, r in rigs.items()})
+                 registration_scale=reg["scale"], clips={n: r.stem for n, r in rigs.items()}, segment=segment)
     return dict(episode=episode, fps=fps, table_z=table_z, hands=out, notes=notes, rigs=rigs)
 
 

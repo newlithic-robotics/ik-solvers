@@ -100,7 +100,7 @@ def slice_hand(h, grid: np.ndarray):
 def render_episode(rigs: dict, views: dict, grid: np.ndarray, paths: dict, fps: int, crf: int = 18) -> None:
     """The two wrist videos of an episode, one frame per instant of `grid` (each rig's nearest frame)."""
     from .wrist import Reader, writer
-    idx = {n: r.frame_at(grid) for n, r in rigs.items()}
+    idx = {n: r.frame_at(grid) + r.frame0 for n, r in rigs.items()}          # video frames (a rig may start mid-clip)
     rd = {n: Reader(rigs[n].files[1], idx[n][0], views[n].src_scale, views[n].x0, views[n].lens_w) for n in rigs}
     ff = {n: writer(paths[n], views[n].W, views[n].H, crf=crf, fps=str(fps)) for n in rigs}
     try:
@@ -115,17 +115,46 @@ def render_episode(rigs: dict, views: dict, grid: np.ndarray, paths: dict, fps: 
 
 
 def prepare_recording(session: str, recording: str, episodes: list, out_dir: str, fps: int = 30, jig_gap_mm: Optional[float] = 22.4,
-                      tasks: Optional[dict] = None, render: bool = True, force: bool = False) -> list:
-    """Writes <out_dir>/<recording>_eNN.npz/.json (+ _wrist_left/right.mp4) for every reviewed episode; returns their records."""
+                      tasks: Optional[dict] = None, render: bool = True, force: bool = False, skipped: Optional[dict] = None) -> list:
+    """Writes <out_dir>/<recording>_eNN.npz/.json (+ _wrist_left/right.mp4) for every reviewed episode; returns their records.
+    A recording estimated per episode window is prepared window by window, each in its own world with its own dock frame, table
+    height and jig calibration; an episode whose window could not be prepared goes into `skipped` (name -> why)."""
+    from .demo_export import segment_of_episodes
+    session = Path(session)
+    seg_of = segment_of_episodes(session, recording)
+    if seg_of is None:
+        return _prepare_part(session, recording, episodes, out_dir, fps, jig_gap_mm, tasks, render, force, None)
+    records = []
+    by_seg: dict = {}
+    for e in episodes:
+        if int(e["index"]) not in seg_of:
+            (skipped if skipped is not None else {})[f"{recording}_e{int(e['index']):02d}"] = "its episode window was not estimated or not put on one clock"
+            continue
+        by_seg.setdefault(seg_of[int(e["index"])], []).append(e)
+    for sg, eps in sorted(by_seg.items()):
+        try:
+            records += _prepare_part(session, recording, eps, out_dir, fps, jig_gap_mm, tasks, render, force, sg)
+        except Exception as ex:  # noqa: BLE001 - one window must not cost the recording's others
+            for e in eps:
+                (skipped if skipped is not None else {})[f"{recording}_e{int(e['index']):02d}"] = f"{type(ex).__name__}: {ex}"
+    if not records and episodes:
+        raise RuntimeError("no episode window of this recording could be prepared: " + "; ".join(sorted(set((skipped or {}).values())))[:500])
+    return records
+
+
+def _prepare_part(session: Path, recording: str, episodes: list, out_dir: str, fps: int, jig_gap_mm: Optional[float], tasks: Optional[dict],
+                  render: bool, force: bool, segment: Optional[int]) -> list:
+    """prepare_recording for one world: the whole recording, or one episode window (segment)."""
     from .wrist import WristView
-    session, out = Path(session), Path(out_dir)
+    out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     tasks = {int(k): v for k, v in (tasks or DEFAULT_TASKS).items()}
     data = session / "raw" / recording
-    demo = build_demo(session, recording, data if render else None, jig_gap_mm=jig_gap_mm)
+    demo = build_demo(session, recording, data if render else None, jig_gap_mm=jig_gap_mm, segment=segment)
     left = demo["hands"]["left"]
     anchor = _anchor(left.p, left.R, rest_window(left))
-    anchor_rec = dict(xy=anchor["xy"].tolist(), heading=anchor["heading"], frames=anchor["frames"], table_z=float(demo["table_z"]))
+    anchor_rec = dict(xy=anchor["xy"].tolist(), heading=anchor["heading"], frames=anchor["frames"], table_z=float(demo["table_z"]),
+                      **({} if segment is None else {"segment": int(segment)}))
     views = {n: WristView(r) for n, r in demo["rigs"].items()} if render else {}
     t_lo = max(h.t[0] for h in demo["hands"].values())
     t_hi = min(h.t[-1] for h in demo["hands"].values())
@@ -158,7 +187,8 @@ def prepare_recording(session: str, recording: str, episodes: list, out_dir: str
 
 def _prepare_job(kw):
     try:
-        return dict(ok=True, recording=kw["recording"], records=prepare_recording(**kw))
+        skipped: dict = {}
+        return dict(ok=True, recording=kw["recording"], records=prepare_recording(**kw, skipped=skipped), skipped=skipped)
     except Exception as ex:  # noqa: BLE001 - one bad recording must not stop the collection
         return dict(ok=False, recording=kw["recording"], error=f"{type(ex).__name__}: {ex}", trace=traceback.format_exc())
 
@@ -233,7 +263,11 @@ def run_collection(sessions: list, work: Path, dataset: Optional[Path] = None, r
                 if r["ok"]:
                     for rec in r["records"]:
                         manifest["episodes"][rec["name"]] = {**manifest["episodes"].get(rec["name"], {}), **rec}
+                        manifest["failed"].pop(rec["name"], None)
                     manifest["failed"].pop(r["recording"], None)
+                    for name, why in r.get("skipped", {}).items():                # one episode window that could not be prepared
+                        manifest["failed"][name] = why
+                        log(f"  {name}: SKIPPED {why}")
                     log(f"  {r['recording']}: {len(r['records'])} episodes prepared ({time.time() - t0:.0f} s)")
                 else:
                     manifest["failed"][r["recording"]] = r["error"]
