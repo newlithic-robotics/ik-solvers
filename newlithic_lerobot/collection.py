@@ -50,9 +50,22 @@ def episode_rest(h, t_start: float, before_s: float = 2.5, after_s: float = 0.5,
     before its first grasp.  Each episode is measured from its own dock, so where the hand rested between episodes (it varies by
     centimetres and degrees) does not shift the episode."""
     sp = np.linalg.norm(np.gradient(h.p, h.t, axis=0), axis=1)
-    cross = [h.t[ev["cross"]] for ev in h.events if h.t[ev["cross"]] >= t_start - before_s]
+    cross = [h.t[ev["cross"]] for ev in h.events if h.t[ev["cross"]] >= t_start - 0.5]     # this episode's first grasp
     end = min(t_start + after_s, (cross[0] if cross else h.t[-1]) - margin_s)
     return (h.t >= t_start - before_s) & (h.t < end) & h.valid & (sp < speed_max)
+
+
+def episode_dock(h, t_start: float) -> tuple:
+    """(rest mask, how): the episode's own docked rest, looked for further back and with a little drift allowed when the operator
+    moved off at once; the recording's first rest only when there is none (then `how` says so)."""
+    for before_s, speed in ((2.5, 0.02), (8.0, 0.02), (2.5, 0.05), (8.0, 0.05)):
+        m = episode_rest(h, t_start, before_s=before_s, speed_max=speed)
+        if m.sum() >= 5:
+            return m, "episode" if (before_s, speed) == (2.5, 0.02) else f"episode ({before_s:g} s back, {speed * 100:g} cm/s)"
+    m = rest_window(h)
+    if m.sum() >= 5:
+        return m, "recording"
+    raise ValueError("no still stretch of the left hand before the episode or the recording (its dock)")
 
 
 def _anchor(p: np.ndarray, R: np.ndarray, rest: np.ndarray) -> dict:
@@ -174,12 +187,10 @@ def _prepare_part(session: Path, recording: str, episodes: list, out_dir: str, f
             raise ValueError(f"{name}: only {len(grid)} frames between {a:.2f} and {b:.2f} s")
         hands = {n: slice_hand(h, grid) for n, h in demo["hands"].items()}
         valid = float(np.mean([h.valid.mean() for h in hands.values()]))
-        rest = episode_rest(left, float(e["start_s"]))
-        if rest.sum() < 5:
-            raise ValueError(f"{name}: no still stretch of the left hand just before the episode (its dock)")
+        rest, how = episode_dock(left, float(e["start_s"]))
         anchor = _anchor(left.p, left.R, rest)
         anchor_rec = dict(xy=anchor["xy"].tolist(), heading=anchor["heading"], frames=anchor["frames"], table_z=float(demo["table_z"]),
-                          rest="episode", **({} if segment is None else {"segment": int(segment)}))
+                          rest=how, **({} if segment is None else {"segment": int(segment)}))
         notes = {**demo["notes"], "recording": recording, "session": f"{session.parent.name}/{session.name}", "episode_index": int(e["index"]),
                  "window_s": [a, b], "cue_s": [e.get("cue_start_s"), e.get("cue_stop_s")], "task_id": e.get("task_id"),
                  "resampled_fps": fps, "source_fps": demo["fps"],
