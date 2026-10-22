@@ -45,6 +45,16 @@ DEFAULT_TASKS = {0: "Unscrew the M5 nut from the bolt held by the other hand"}
 
 
 # ----------------------------------------------------------------------------- placement through the left dock
+def episode_rest(h, t_start: float, before_s: float = 2.5, after_s: float = 0.5, speed_max: float = 0.02, margin_s: float = 0.3) -> np.ndarray:
+    """The docked rest just before an episode: the still frames from `before_s` ahead of its start to `after_s` after it, and
+    before its first grasp.  Each episode is measured from its own dock, so where the hand rested between episodes (it varies by
+    centimetres and degrees) does not shift the episode."""
+    sp = np.linalg.norm(np.gradient(h.p, h.t, axis=0), axis=1)
+    cross = [h.t[ev["cross"]] for ev in h.events if h.t[ev["cross"]] >= t_start - before_s]
+    end = min(t_start + after_s, (cross[0] if cross else h.t[-1]) - margin_s)
+    return (h.t >= t_start - before_s) & (h.t < end) & h.valid & (sp < speed_max)
+
+
 def _anchor(p: np.ndarray, R: np.ndarray, rest: np.ndarray) -> dict:
     """The docked grip of a hand: planar position [m] and the heading of the fingers [rad] in the world."""
     if rest.sum() < 5:
@@ -152,10 +162,7 @@ def _prepare_part(session: Path, recording: str, episodes: list, out_dir: str, f
     data = session / "raw" / recording
     demo = build_demo(session, recording, data if render else None, jig_gap_mm=jig_gap_mm, segment=segment)
     left = demo["hands"]["left"]
-    anchor = _anchor(left.p, left.R, rest_window(left))
-    anchor_rec = dict(xy=anchor["xy"].tolist(), heading=anchor["heading"], frames=anchor["frames"], table_z=float(demo["table_z"]),
-                      **({} if segment is None else {"segment": int(segment)}))
-    views = {n: WristView(r) for n, r in demo["rigs"].items()} if render else {}
+    views: dict = {}                                                         # made when a video has to be rendered (needs the raw clips)
     t_lo = max(h.t[0] for h in demo["hands"].values())
     t_hi = min(h.t[-1] for h in demo["hands"].values())
     records = []
@@ -167,6 +174,12 @@ def _prepare_part(session: Path, recording: str, episodes: list, out_dir: str, f
             raise ValueError(f"{name}: only {len(grid)} frames between {a:.2f} and {b:.2f} s")
         hands = {n: slice_hand(h, grid) for n, h in demo["hands"].items()}
         valid = float(np.mean([h.valid.mean() for h in hands.values()]))
+        rest = episode_rest(left, float(e["start_s"]))
+        if rest.sum() < 5:
+            raise ValueError(f"{name}: no still stretch of the left hand just before the episode (its dock)")
+        anchor = _anchor(left.p, left.R, rest)
+        anchor_rec = dict(xy=anchor["xy"].tolist(), heading=anchor["heading"], frames=anchor["frames"], table_z=float(demo["table_z"]),
+                          rest="episode", **({} if segment is None else {"segment": int(segment)}))
         notes = {**demo["notes"], "recording": recording, "session": f"{session.parent.name}/{session.name}", "episode_index": int(e["index"]),
                  "window_s": [a, b], "cue_s": [e.get("cue_start_s"), e.get("cue_stop_s")], "task_id": e.get("task_id"),
                  "resampled_fps": fps, "source_fps": demo["fps"],
@@ -176,6 +189,8 @@ def _prepare_part(session: Path, recording: str, episodes: list, out_dir: str, f
             write_demo(dict(episode=name, fps=float(fps), table_z=demo["table_z"], hands=hands, notes=notes), demo_path)
         videos = {n: str(out / f"{name}_wrist_{n}.mp4") for n in hands}
         if render and (force or not all(Path(v).exists() and Path(v).stat().st_size > 1000 for v in videos.values())):
+            if not views:
+                views.update({n: WristView(r) for n, r in demo["rigs"].items()})
             render_episode(demo["rigs"], views, grid, videos, fps)
         task_id = e.get("task_id")
         records.append(dict(name=name, session=notes["session"], recording=recording, index=int(e["index"]), demo=str(demo_path), videos=videos,
