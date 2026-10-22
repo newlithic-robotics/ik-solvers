@@ -157,3 +157,123 @@ def write_ee_dataset(records: list, root: Path, repo_id: str, fps: int = 30, vco
     work.rename(root)
     log(f"done: {len(todo)} episode(s), {total} frames added -> {root} ({want} episodes)" + (f"; the previous dataset is {prev.name}" if prev else ""))
     return {"root": str(root), "added": len(todo), "episodes": want, "previous": str(prev) if prev else None}
+
+
+def reanchor_ee_dataset(root: Path, anchors: dict, repo_id: str | None = None, log=print) -> dict:
+    """Rewrites the poses of an end-effector dataset in new dock frames and keeps everything else, the wrist videos above all
+    (re-encoding them is most of an export's time).  anchors: episode name -> anchor (collection manifest records).
+
+    Works on <root>.reanchor (videos and images hard-linked, the rest copied): observation.state and action of every frame, the
+    per-episode statistics of those two features (meta/episodes), the dataset's (meta/stats.json, with lerobot's own functions)
+    and the anchors in meta/newlithic_ee.json.  The copy is loaded with lerobot and checked against the new poses before it
+    replaces the dataset; the dataset it replaces is kept as <root>.previous-<time>."""
+    import os
+    import shutil
+    from datetime import datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from lerobot.datasets.compute_stats import aggregate_stats, compute_episode_stats
+
+    root = Path(root)
+    side = json.loads((root / "meta" / "newlithic_ee.json").read_text(encoding="utf-8"))
+    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
+    eps = side["episodes"]
+    if len(eps) != info["total_episodes"]:
+        raise ValueError(f"meta/newlithic_ee.json lists {len(eps)} episodes, the dataset has {info['total_episodes']}")
+    missing = [e["episode"] for e in eps if e["episode"] not in anchors]
+    if missing:
+        raise ValueError(f"{len(missing)} episode(s) without a new anchor, e.g. {missing[:3]}: prepare their sessions first")
+    work = root.with_name(root.name + ".reanchor")
+    if work.exists():
+        shutil.rmtree(work)
+    linked = 0
+    for src in root.rglob("*"):
+        dst = work / src.relative_to(root)
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.relative_to(root).parts[0] in ("videos", "images"):
+            try:
+                os.link(src, dst)
+                linked += 1
+                continue
+            except OSError:
+                pass
+        shutil.copy2(src, dst)
+    log(f"reanchor: {len(eps)} episodes; working copy {work.name} ({linked} video files linked, not copied)")
+
+    frames = {k: ee_frames(e["demo"], anchors[e["episode"]]) for k, e in enumerate(eps)}
+    feats = info["features"]
+    keys = ("observation.state", "action")
+    ep_stats = {k: compute_episode_stats({"observation.state": fr["state"].astype(np.float32), "action": fr["action"].astype(np.float32)},
+                                         {key: feats[key] for key in keys}) for k, fr in frames.items()}
+
+    def column(values: np.ndarray, typ):
+        flat = pa.array(values.astype(np.float32).ravel(), type=pa.float32())
+        if pa.types.is_fixed_size_list(typ):
+            arr = pa.FixedSizeListArray.from_arrays(flat, values.shape[1])
+        else:
+            arr = pa.ListArray.from_arrays(pa.array(np.arange(0, values.size + 1, values.shape[1]), type=pa.int32()), flat)
+        return arr.cast(typ)
+
+    rows_done = 0
+    for f in sorted((work / "data").rglob("*.parquet")):
+        t = pq.read_table(f)
+        ep_idx, fr_idx = t.column("episode_index").to_numpy(), t.column("frame_index").to_numpy()
+        new = {key: np.stack(t.column(key).to_numpy(zero_copy_only=False)).astype(np.float32) for key in keys}
+        for k in np.unique(ep_idx):
+            rows = np.flatnonzero(ep_idx == k)
+            fr = frames[int(k)]
+            if len(rows) != fr["n"] or fr_idx[rows].max() >= fr["n"]:
+                raise ValueError(f"episode {eps[int(k)]['episode']}: {len(rows)} rows in the dataset, {fr['n']} frames in its demonstration")
+            new["observation.state"][rows] = fr["state"][fr_idx[rows]]
+            new["action"][rows] = fr["action"][fr_idx[rows]]
+            rows_done += len(rows)
+        for key in keys:
+            i = t.schema.get_field_index(key)
+            t = t.set_column(i, t.schema.field(i), column(new[key], t.schema.field(i).type))
+        pq.write_table(t, f)
+    if rows_done != info["total_frames"]:
+        raise ValueError(f"{rows_done} rows rewritten, the dataset has {info['total_frames']}")
+
+    for f in sorted((work / "meta" / "episodes").rglob("*.parquet")):
+        t = pq.read_table(f)
+        idx = t.column("episode_index").to_numpy()
+        for key in keys:
+            for stat in ep_stats[0][key]:
+                name = f"stats/{key}/{stat}"
+                if name not in t.column_names:
+                    continue
+                i = t.schema.get_field_index(name)
+                vals = [np.asarray(ep_stats[int(k)][key][stat]).reshape(-1).tolist() for k in idx]
+                t = t.set_column(i, t.schema.field(i), pa.array(vals).cast(t.schema.field(i).type))
+        pq.write_table(t, f)
+    stats = json.loads((work / "meta" / "stats.json").read_text(encoding="utf-8"))
+    agg = aggregate_stats([ep_stats[k] for k in sorted(ep_stats)])
+    for key in keys:
+        stats[key] = {s: np.asarray(v).tolist() for s, v in agg[key].items()}
+    (work / "meta" / "stats.json").write_text(json.dumps(stats, indent=4), encoding="utf-8")
+    for k, e in enumerate(eps):
+        e["anchor"] = anchors[e["episode"]]
+    side["reanchored"] = datetime.now().isoformat(timespec="seconds")
+    (work / "meta" / "newlithic_ee.json").write_text(json.dumps(side, indent=1), encoding="utf-8")
+
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset                # the copy must load, and say what was written
+    ds = LeRobotDataset(repo_id or side.get("repo_id") or "local/reanchor", root=work)
+    if len(ds) != info["total_frames"]:
+        raise ValueError(f"the rewritten dataset loads with {len(ds)} frames, not {info['total_frames']}")
+    for k in sorted({0, len(eps) // 2, len(eps) - 1}):
+        start = int(ds.meta.episodes[k]["dataset_from_index"]) if hasattr(ds.meta, "episodes") else None
+        if start is None:
+            continue
+        got = np.asarray(ds.hf_dataset[start]["observation.state"], np.float32)
+        if not np.allclose(got, frames[k]["state"][0].astype(np.float32), atol=1e-6):
+            raise ValueError(f"episode {eps[k]['episode']}: the rewritten dataset does not hold the new poses")
+    prev = root.with_name(f"{root.name}.previous-{datetime.now():%Y%m%d_%H%M%S}")
+    root.rename(prev)
+    work.rename(root)
+    log(f"reanchor: done, {rows_done} frames of {len(eps)} episodes in their own dock frames -> {root}; the previous dataset is {prev.name}")
+    return {"root": str(root), "episodes": len(eps), "frames": rows_done, "previous": str(prev)}
+

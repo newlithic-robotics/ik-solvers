@@ -327,6 +327,11 @@ def run_collection(sessions: list, work: Path, dataset: Optional[Path] = None, r
                       cameras=cameras, log=log)
         manifest["dataset"] = dict(root=str(dataset), repo_id=repo_id, episodes=good)
         manifest_path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    if "reanchor-ee" in stages:                                                # the dataset's poses in each episode's own dock frame
+        from .ee_dataset import reanchor_ee_dataset
+        res = reanchor_ee_dataset(Path(ee_dataset), {n: e["anchor"] for n, e in manifest["episodes"].items() if e.get("anchor")}, ee_repo_id, log=log)
+        manifest["ee_dataset"] = {**manifest.get("ee_dataset", {}), "root": res["root"], "reanchored": res}
+        manifest_path.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     if "export-ee" in stages:
         from .ee_dataset import write_ee_dataset
         ready = [manifest["episodes"][n] for n in names if Path(manifest["episodes"][n].get("demo", "")).exists()

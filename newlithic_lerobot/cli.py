@@ -262,7 +262,8 @@ def main(argv=None):
     c.add_argument("--work", required=True, help="directory for the per-episode demonstrations, wrist videos and retargeted episodes")
     c.add_argument("--dataset", help="dataset root directory (export stage)")
     c.add_argument("--repo-id", help="hub id the dataset is written under")
-    c.add_argument("--stages", default="prepare,solve,export", help="comma-separated subset of prepare,solve,export,export-ee")
+    c.add_argument("--stages", default="prepare,solve,export", help="comma-separated subset of prepare,solve,export,export-ee,reanchor-ee "
+                                                                     "(reanchor-ee: the end-effector dataset's poses in the anchors of the last prepare)")
     c.add_argument("--ee-dataset", help="end-effector training dataset root (export-ee stage): grip poses and openings, no joints")
     c.add_argument("--ee-repo-id", help="hub id the end-effector dataset is written under")
     c.add_argument("--jobs", type=int, default=8, help="recordings prepared / episodes solved in parallel")
