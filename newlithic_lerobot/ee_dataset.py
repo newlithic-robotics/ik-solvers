@@ -15,9 +15,11 @@ Per frame, on the prepared demonstration's grid (collection.prepare_recording: `
     observation.images.left_wrist / right_wrist   the rendered wrist views of the same instant
     observation.phase (2)    transport 0, grasp 1, hold 2, release 3, approach 4, per hand (context, not for control)
 
-All poses are in the LEFT DOCK frame: origin at the docked left grip (its x, y) on the reference surface (z of the table the
-fingers touched), x along the docked left fingers' heading, z up.  The same motion has the same coordinates in every recording
-(each recording's own world starts wherever the left rig did).
+All poses are in the episode's LEFT DOCK frame: origin at the left grip as it rested just before the episode (its x, y;
+collection.episode_rest) on the reference surface (z of the table the fingers touched), x along those resting fingers' heading,
+z up.  Every episode starts from its own dock: where the hand rested between episodes varies by centimetres and degrees, and an
+episode estimated in its own window (state-estimation, after QA) has no other reference.  The same motion has the same
+coordinates in every episode.  reanchor_ee_dataset rewrites a dataset's poses when the dock frames change, keeping its videos.
 
 Adding sessions: the current dataset is copied to <root>.next, the new episodes are appended there, the copy is reloaded and
 counted, and only then does it replace <root>; the replaced dataset is kept as <root>.previous-<time>.
